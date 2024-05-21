@@ -41,11 +41,13 @@ jobs:
         # reformatted with invalid double quotes.
         if: '!startsWith(github.ref, ''refs/tags/openrosa-xpath-evaluator/'') && !startsWith(github.ref, ''refs/tags/enketo-transformer/'') && !startsWith(github.ref, ''refs/tags/enketo-core/'')'
         steps:
-            - uses: actions/checkout@v2
-            - uses: mr-smithers-excellent/docker-build-push@v2
+            - uses: actions/checkout@v4
+            - uses: mr-smithers-excellent/docker-build-push@v6
               with:
                   image: onaio/enketo-express
                   registry: docker.io
                   dockerfile: Dockerfile
                   username: ${{ secrets.DOCKER_HUB_USERNAME }}
                   password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+                  multiPlatform: true
+                  platform: linux/amd64,linux/arm64
