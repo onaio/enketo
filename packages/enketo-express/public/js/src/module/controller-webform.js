@@ -524,6 +524,43 @@ function _confirmRecordName(recordName, draft, errorMsg) {
 // t( 'confirm.save.renamemsg', {} )
 
 /**
+ * Converts any string filenames in the files array to actual Blob objects.
+ * This is needed for encrypted forms when editing existing submissions where
+ * some media files weren't modified and are represented as filename strings.
+ *
+ * @param {Array<Blob|string>} files - array of files (Blobs) and filenames (strings)
+ * @return {Promise<Blob[]>} promise resolving to array of Blob objects
+ */
+function _convertFilesToBlobs(files) {
+    const filePromises = files.map((file) => {
+        if (typeof file === 'string') {
+            // This is a filename string for an existing file - fetch the actual blob
+            return fileManager.getFileUrl(file).then((url) =>
+                // Fetch the file content and convert to blob
+                // Use credentials: 'include' to send cookies for authenticated requests
+                fetch(url, { credentials: 'include' })
+                    .then((response) => {
+                        if (!response.ok) {
+                            throw new Error(
+                                `Failed to fetch ${file}: ${response.status}`
+                            );
+                        }
+                        return response.blob();
+                    })
+                    .then((blob) => {
+                        blob.name = file;
+                        return blob;
+                    })
+            );
+        }
+        // Already a Blob, return as-is
+        return Promise.resolve(file);
+    });
+
+    return Promise.all(filePromises);
+}
+
+/**
  * @param {Survey} survey
  * @param {boolean} draft - whether the record is a draft
  * @param {string} [recordName] - proposed name of the record
@@ -554,6 +591,14 @@ function _saveRecord(survey, draft, recordName, confirmed) {
     return autoSavePromise
         .then(() => form.beforeSubmit())
         .then(() => fileManager.getCurrentFiles())
+        .then((files) => {
+            // For encrypted forms, we need to convert any string filenames
+            // (existing files that weren't modified) to actual Blobs
+            if (form.encryptionKey && !draft) {
+                return _convertFilesToBlobs(files);
+            }
+            return files;
+        })
         .then((files) => {
             // build the record object
             const record = {
