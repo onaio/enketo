@@ -179,6 +179,9 @@ describe('Encryption-enabled surveys', () => {
     });
 
     describe('editing encrypted forms with unchanged media', () => {
+        // Tests for the _convertFilesToBlobs function which is used by both:
+        // - _submitRecord (online submissions)
+        // - _saveRecord (offline submissions)
         const form = {
             id: 'editForm',
             version: '1',
@@ -192,15 +195,15 @@ describe('Encryption-enabled surveys', () => {
          */
         async function convertFileToBlob(filename) {
             const url = await fileManager.getFileUrl(filename);
-            if (url.startsWith('data:') || url.startsWith('blob:')) {
-                const response = await fetch(url);
-                const blob = await response.blob();
-                blob.name = filename;
-                return blob;
+            const response = await fetch(url, { credentials: 'include' });
+            if (!response.ok) {
+                throw new Error(
+                    `Failed to fetch ${filename}: ${response.status}`
+                );
             }
-            const { item } = await connection.getMediaFile(url);
-            item.name = filename;
-            return item;
+            const blob = await response.blob();
+            blob.name = filename;
+            return blob;
         }
 
         it('succeeds when unchanged media files are converted from filenames to Blobs via data URI', async () => {

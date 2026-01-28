@@ -372,6 +372,14 @@ function _submitRecord(survey) {
         .beforeSubmit()
         .then(() => fileManager.getCurrentFiles())
         .then((files) => {
+            // For encrypted forms, we need to convert any string filenames
+            // (existing files that weren't modified) to actual Blobs
+            if (form.encryptionKey) {
+                return _convertFilesToBlobs(files);
+            }
+            return files;
+        })
+        .then((files) => {
             const record = {
                 enketoId: settings.enketoId,
                 xml: form.getDataStr(include),
@@ -532,50 +540,28 @@ function _confirmRecordName(recordName, draft, errorMsg) {
  * @return {Promise<Blob[]>} promise resolving to array of Blob objects
  */
 function _convertFilesToBlobs(files) {
-    console.log('_convertFilesToBlobs called with files:', files);
     const filePromises = files.map((file) => {
         if (typeof file === 'string') {
-            console.log('Converting string filename to blob:', file);
             // This is a filename string for an existing file - fetch the actual blob
-            return fileManager
-                .getFileUrl(file)
-                .then((url) => {
-                    console.log('Got URL for file:', file, url);
-                    // Fetch the file content and convert to blob
-                    // Use credentials: 'include' to send cookies for authenticated requests
-                    return fetch(url, { credentials: 'include' });
-                })
-                .then((response) => {
-                    console.log(
-                        'Fetch response for file:',
-                        file,
-                        response.ok,
-                        response.status
-                    );
-                    if (!response.ok) {
-                        throw new Error(
-                            `Failed to fetch ${file}: ${response.status}`
-                        );
-                    }
-                    return response.blob();
-                })
-                .then((blob) => {
-                    console.log(
-                        'Got blob for file:',
-                        file,
-                        blob,
-                        blob instanceof Blob
-                    );
-                    blob.name = file;
-                    return blob;
-                })
-                .catch((err) => {
-                    console.error('Error converting file to blob:', file, err);
-                    throw err;
-                });
+            return fileManager.getFileUrl(file).then((url) =>
+                // Fetch the file content and convert to blob
+                // Use credentials: 'include' to send cookies for authenticated requests
+                fetch(url, { credentials: 'include' })
+                    .then((response) => {
+                        if (!response.ok) {
+                            throw new Error(
+                                `Failed to fetch ${file}: ${response.status}`
+                            );
+                        }
+                        return response.blob();
+                    })
+                    .then((blob) => {
+                        blob.name = file;
+                        return blob;
+                    })
+            );
         }
         // Already a Blob, return as-is
-        console.log('File is already a Blob:', file, file instanceof Blob);
         return Promise.resolve(file);
     });
 
