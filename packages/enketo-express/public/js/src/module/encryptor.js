@@ -5,6 +5,7 @@
  * key).
  ********************************************************************************************* */
 import forge from 'node-forge';
+import fileManager from './file-manager';
 import utils from './utils';
 
 /**
@@ -121,7 +122,8 @@ function encryptRecord(form, record) {
         record.instanceId,
     ]);
 
-    return _encryptMediaFiles(record.files, symmetricKey, seed)
+    return _convertFilesToBlobs(record.files)
+        .then((files) => _encryptMediaFiles(files, symmetricKey, seed))
         .then(manifest.addMediaFiles)
         .then((blobs) => {
             const submissionXmlEnc = _encryptSubmissionXml(
@@ -189,6 +191,38 @@ function _getBase64EncryptedElementSignature(elements, publicKey) {
     ).getBytes();
 
     return _rsaEncrypt(messageDigest, publicKey);
+}
+
+/**
+ * Converts any string filenames in the files array to Blobs by resolving
+ * them through fileManager and fetching their content.
+ *
+ * @param {Array<Blob|string>} files
+ * @return {Promise<Blob[]>}
+ */
+function _convertFilesToBlobs(files) {
+    const filePromises = (files || []).map((file) => {
+        if (typeof file === 'string') {
+            return fileManager.getFileUrl(file).then((url) =>
+                fetch(url, { credentials: 'include' })
+                    .then((response) => {
+                        if (!response.ok) {
+                            throw new Error(
+                                `Failed to fetch ${file}: ${response.status}`
+                            );
+                        }
+                        return response.blob();
+                    })
+                    .then((blob) => {
+                        blob.name = file;
+                        return blob;
+                    })
+            );
+        }
+        return Promise.resolve(file);
+    });
+
+    return Promise.all(filePromises);
 }
 
 function _encryptMediaFiles(files, symmetricKey, seed) {
