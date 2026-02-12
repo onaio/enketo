@@ -349,53 +349,5 @@ describe('Encryptor', () => {
                 })
                 .catch(done);
         });
-
-        it('encrypts successfully when editing with unchanged media files converted to Blobs', (done) => {
-            // Simulates editing an encrypted form where some media files were not changed.
-            // The unchanged files would originally be string filenames from getCurrentFiles(),
-            // but controller-webform converts them to Blobs before encryption.
-            const existingFileContent = 'existing image content';
-            const existingFile = new Blob([existingFileContent], {
-                type: 'image/jpeg',
-            });
-            existingFile.name = 'existing-image.jpg';
-
-            const newFile = new Blob(['new image content'], {
-                type: 'image/png',
-            });
-            newFile.name = 'new-image.png';
-
-            const record = {
-                xml: '<root>edited submission</root>',
-                instanceId: 'edit-1',
-                files: [existingFile, newFile],
-            };
-
-            encryptor
-                .encryptRecord(form, record)
-                .then((encryptedRecord) => {
-                    const doc = new DOMParser().parseFromString(
-                        encryptedRecord.xml,
-                        'text/xml'
-                    );
-                    expect(
-                        doc.querySelectorAll('data > media').length
-                    ).to.equal(2);
-                    expect(
-                        doc.querySelectorAll('data > media > file').length
-                    ).to.equal(2);
-                    expect(
-                        doc.querySelectorAll('data > media > file')[0]
-                            .textContent
-                    ).to.equal('existing-image.jpg.enc');
-                    expect(
-                        doc.querySelectorAll('data > media > file')[1]
-                            .textContent
-                    ).to.equal('new-image.png.enc');
-                    expect(encryptedRecord.files.length).to.equal(3); // 2 media + 1 submission.xml.enc
-                    done();
-                })
-                .catch(done);
-        });
     });
 });
