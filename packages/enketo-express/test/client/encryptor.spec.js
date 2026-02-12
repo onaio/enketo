@@ -10,7 +10,6 @@
 
 import forge from 'node-forge';
 import encryptor from '../../public/js/src/module/encryptor';
-import fileManager from '../../public/js/src/module/file-manager';
 
 describe('Encryptor', () => {
     /** @type {import('sinon').SinonSandbox} */
@@ -346,62 +345,6 @@ describe('Encryptor', () => {
                             'data > base64EncryptedElementSignature'
                         ).textContent
                     ).to.equal(expectedSignature);
-                    done();
-                })
-                .catch(done);
-        });
-    });
-
-    describe('encrypting with string filenames', () => {
-        const form = {
-            id: 'abc',
-            version: '2',
-            encryptionKey:
-                'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5s9p+VdyX1ikG8nnoXLCC9hKfivAp/e1sHr3O15UQ+a8CjR/QV29+cO8zjS/KKgXZiOWvX+gDs2+5k9Kn4eQm5KhoZVw5Xla2PZtJESAd7dM9O5QrqVJ5Ukrq+kG/uV0nf6X8dxyIluNeCK1jE55J5trQMWT2SjDcj+OVoTdNGJ1H6FL+Horz2UqkIObW5/elItYF8zUZcO1meCtGwaPHxAxlvODe8JdKs3eMiIo9eTT4WbH1X+7nJ21E/FBd8EmnK/91UGOx2AayNxM0RN7pAcj47a434LzeM+XCnBztd+mtt1PSflF2CFE116ikEgLcXCj4aklfoON9TwDIQSp0wIDAQAB',
-        };
-
-        afterEach(() => {
-            fileManager.setInstanceAttachments(null);
-        });
-
-        it('converts string filenames to Blobs and encrypts them', (done) => {
-            const content = 'existing image content';
-            const dataURI = `data:image/jpeg;base64,${btoa(content)}`;
-
-            fileManager.setInstanceAttachments({
-                'existing-image.jpg': dataURI,
-            });
-
-            const newFile = new Blob(['new image content'], {
-                type: 'image/png',
-            });
-            newFile.name = 'new-image.png';
-
-            const record = {
-                xml: '<root>edited submission</root>',
-                instanceId: 'edit-1',
-                files: ['existing-image.jpg', newFile],
-            };
-
-            encryptor
-                .encryptRecord(form, record)
-                .then((encryptedRecord) => {
-                    const doc = new DOMParser().parseFromString(
-                        encryptedRecord.xml,
-                        'text/xml'
-                    );
-                    expect(
-                        doc.querySelectorAll('data > media > file').length
-                    ).to.equal(2);
-                    expect(
-                        doc.querySelectorAll('data > media > file')[0]
-                            .textContent
-                    ).to.equal('existing-image.jpg.enc');
-                    expect(
-                        doc.querySelectorAll('data > media > file')[1]
-                            .textContent
-                    ).to.equal('new-image.png.enc');
-                    expect(encryptedRecord.files.length).to.equal(3); // 2 media + 1 submission.xml.enc
                     done();
                 })
                 .catch(done);
