@@ -22,8 +22,10 @@ block script
   - var suffix = (type && type !== 'preview' && type !== 'single') ? '-' + type : ''
     script#main-script(defer, type="module", src=`${basePath}${offlinePath || ''}/js/build/enketo-webform${suffix}.js`)
 
+  - var enketoSession = (typeof session !== 'undefined' && session) ? session : {}
   script.
     var env = !{JSON.stringify(clientConfig).replace(/<\//g, '<\\/')};
+    window.__enketoSession = !{JSON.stringify(enketoSession).replace(/<\//g, '<\\/')};
 
 block content
   include component/_notification
