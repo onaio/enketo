@@ -2,7 +2,7 @@
 process.env.NODE_ENV = 'test';
 
 const request = require('supertest');
-const assert = require('assert');
+const { expect } = require('chai');
 const crypto = require('crypto');
 const config = require('../../app/models/config-model').server;
 
@@ -29,6 +29,16 @@ function signedCookie(value) {
 }
 
 describe('Survey Controller', () => {
+    let offlineEnabled;
+
+    before(() => {
+        offlineEnabled = app.get('offline enabled');
+    });
+
+    after(() => {
+        app.set('offline enabled', offlineEnabled);
+    });
+
     describe('meta data: ', () => {
         const endpoints = [
             '/x/abcd',
@@ -47,43 +57,68 @@ describe('Survey Controller', () => {
                     .expect('set-cookie', /__enketo_meta_deviceid/)
                     .end(done);
             });
+        });
 
-            it(`endpoint ${endpoint} sets the __enketo_meta_deviceid cookie as HttpOnly`, (done) => {
-                app.set('offline enabled', true);
-                request(app)
-                    .get(endpoint)
-                    .expect(200)
-                    .end((err, res) => {
-                        if (err) {
-                            return done(err);
-                        }
-                        const cookies = res.headers['set-cookie'] || [];
-                        const deviceCookie = cookies.find((c) =>
-                            c.startsWith('__enketo_meta_deviceid=')
-                        );
-                        assert.ok(
-                            deviceCookie,
-                            'expected a __enketo_meta_deviceid cookie'
-                        );
-                        assert.ok(
-                            /HttpOnly/i.test(deviceCookie),
-                            'expected __enketo_meta_deviceid cookie to be HttpOnly'
-                        );
+        it('sets the __enketo_meta_deviceid cookie as HttpOnly when offline is disabled', (done) => {
+            app.set('offline enabled', false);
+            request(app)
+                .get('/abcd')
+                .expect(200)
+                .end((err, res) => {
+                    if (err) {
+                        return done(err);
+                    }
+                    const cookies = res.headers['set-cookie'] || [];
+                    const deviceCookie = cookies.find((c) =>
+                        c.startsWith('__enketo_meta_deviceid=')
+                    );
+                    expect(deviceCookie, 'deviceid cookie').to.be.a('string');
+                    expect(deviceCookie).to.match(/HttpOnly/i);
 
-                        return done();
-                    });
-            });
+                    return done();
+                });
+        });
+
+        it('keeps the __enketo_meta_deviceid cookie JS-readable when offline is enabled (offline pages read it client-side)', (done) => {
+            app.set('offline enabled', true);
+            request(app)
+                .get('/abcd')
+                .expect(200)
+                .end((err, res) => {
+                    if (err) {
+                        return done(err);
+                    }
+                    const cookies = res.headers['set-cookie'] || [];
+                    const deviceCookie = cookies.find((c) =>
+                        c.startsWith('__enketo_meta_deviceid=')
+                    );
+                    expect(deviceCookie, 'deviceid cookie').to.be.a('string');
+                    expect(deviceCookie).to.not.match(/HttpOnly/i);
+
+                    return done();
+                });
         });
     });
 
     describe('session metadata injection: ', () => {
+        const extractSession = (res) => {
+            const match = res.text.match(
+                /window\.__enketoSession\s*=\s*(\{[^;]*\});/
+            );
+            expect(match, 'window.__enketoSession assignment').to.not.equal(
+                null
+            );
+
+            return JSON.parse(match[1]);
+        };
+
         beforeEach(() => {
-            app.set('offline enabled', true);
+            app.set('offline enabled', false);
         });
 
         it('injects a window.__enketoSession object into the webform page', (done) => {
             request(app)
-                .get('/x/abcd')
+                .get('/abcd')
                 .expect(200)
                 .expect(/window\.__enketoSession\s*=/)
                 .end(done);
@@ -91,7 +126,7 @@ describe('Survey Controller', () => {
 
         it('always includes the deviceid in the injected session', (done) => {
             request(app)
-                .get('/x/abcd')
+                .get('/abcd')
                 .expect(200)
                 .expect(/window\.__enketoSession\s*=\s*\{[^<]*"deviceid":/)
                 .end(done);
@@ -99,7 +134,7 @@ describe('Survey Controller', () => {
 
         it('injects a signed __enketo_meta_username cookie into the session (so the cookie can be HttpOnly)', (done) => {
             request(app)
-                .get('/x/abcd')
+                .get('/abcd')
                 .set(
                     'Cookie',
                     `__enketo_meta_username=${signedCookie('alice')}`
@@ -111,26 +146,77 @@ describe('Survey Controller', () => {
                 .end(done);
         });
 
-        it('omits properties whose cookie is absent (so client-side readCookie fallback still applies)', (done) => {
+        it('rejects a __enketo_meta_username cookie with a tampered signature', (done) => {
             request(app)
-                .get('/x/abcd')
+                .get('/abcd')
+                .set(
+                    'Cookie',
+                    '__enketo_meta_username=s:mallory.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+                )
                 .expect(200)
                 .end((err, res) => {
                     if (err) {
                         return done(err);
                     }
-                    const match = res.text.match(
-                        /window\.__enketoSession\s*=\s*(\{[^;]*\});/
+                    const session = extractSession(res);
+                    expect(session).to.not.have.property('username');
+
+                    return done();
+                });
+        });
+
+        it('omits properties whose cookie is absent (so client-side readCookie fallback still applies)', (done) => {
+            request(app)
+                .get('/abcd')
+                .expect(200)
+                .end((err, res) => {
+                    if (err) {
+                        return done(err);
+                    }
+                    const session = extractSession(res);
+                    expect(session).to.not.have.property('username');
+
+                    return done();
+                });
+        });
+
+        it('escapes </script> sequences in cookie values (no script-context breakout)', (done) => {
+            request(app)
+                .get('/abcd')
+                .set(
+                    'Cookie',
+                    `__enketo_meta_username=${signedCookie(
+                        '</script><script>alert(1)</script>'
+                    )}`
+                )
+                .expect(200)
+                .end((err, res) => {
+                    if (err) {
+                        return done(err);
+                    }
+                    expect(res.text).to.not.include(
+                        '</script><script>alert(1)'
                     );
-                    assert.ok(
-                        match,
-                        'expected window.__enketoSession assignment'
-                    );
-                    const session = JSON.parse(match[1]);
-                    assert.ok(
-                        !('username' in session),
-                        'expected username to be absent when no cookie is sent'
-                    );
+
+                    return done();
+                });
+        });
+
+        it('does not bake identity into the offline page (service-worker cached; keeps the client-side read)', (done) => {
+            app.set('offline enabled', true);
+            request(app)
+                .get('/x/abcd')
+                .set(
+                    'Cookie',
+                    `__enketo_meta_username=${signedCookie('alice')}`
+                )
+                .expect(200)
+                .end((err, res) => {
+                    if (err) {
+                        return done(err);
+                    }
+                    const session = extractSession(res);
+                    expect(session).to.deep.equal({});
 
                     return done();
                 });

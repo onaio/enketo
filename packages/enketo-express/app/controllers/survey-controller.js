@@ -194,7 +194,11 @@ function _renderWebform(req, res, next, options) {
         signed: true,
         maxAge: 10 * 365 * 24 * 60 * 60 * 1000,
         secure: true,
-        httpOnly: true,
+        // Offline (`/x/`) pages read meta cookies client-side — the service
+        // worker caches the page, so server-injected values would go stale —
+        // and the cookie is shared across views, so it can only be HttpOnly
+        // when offline is disabled.
+        httpOnly: !req.app.get('offline enabled'),
         sameSite: 'lax',
     };
 
@@ -204,10 +208,15 @@ function _renderWebform(req, res, next, options) {
         cookieOptions
     );
 
-    const renderOptions = {
-        ...options,
-        session: _getSessionMeta(req, deviceId),
-    };
+    // The offline (`/x/`) page is cached by the service worker, so a session
+    // injected at render time could carry stale identity; offline views keep
+    // the legacy client-side cookie read instead.
+    const renderOptions = options.offlinePath
+        ? options
+        : {
+              ...options,
+              session: _getSessionMeta(req, deviceId),
+          };
 
     // Make sure that __enketo_logout cookies have httpOnly: false
     //  so that the logout button is displayed properly.
