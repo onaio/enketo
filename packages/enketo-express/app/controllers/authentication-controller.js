@@ -121,9 +121,6 @@ function setToken(req, res) {
         signed: true,
         maxAge: 30 * 24 * 60 * 60 * 1000,
         path: '/',
-        // This cookie is now read server-side in survey-controller and injected
-        // into the webform page, so it no longer needs to be readable by
-        // client-side JavaScript and can be HttpOnly.
         httpOnly: true,
     };
 

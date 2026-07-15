@@ -260,9 +260,6 @@ function _init(formParts) {
             instanceStr: _prepareInstance(formParts.model, settings.defaults),
             external: formParts.externalData,
             survey: formParts,
-            // Session metadata (username, deviceid, etc.) injected server-side
-            // from signed cookies, so those cookies can be HttpOnly. Falls back
-            // to enketo-core's readCookie() for any property not provided here.
             session: window.__enketoSession,
         })
         .then((form) => {

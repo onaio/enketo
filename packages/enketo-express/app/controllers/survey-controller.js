@@ -194,9 +194,6 @@ function _renderWebform(req, res, next, options) {
         signed: true,
         maxAge: 10 * 365 * 24 * 60 * 60 * 1000,
         secure: true,
-        // This cookie is read server-side (see _getSessionMeta) and its value is
-        // injected into the page, so it no longer needs to be readable by
-        // client-side JavaScript and can be HttpOnly.
         httpOnly: true,
         sameSite: 'lax',
     };
