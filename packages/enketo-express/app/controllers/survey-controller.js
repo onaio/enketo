@@ -194,9 +194,11 @@ function _renderWebform(req, res, next, options) {
         signed: true,
         maxAge: 10 * 365 * 24 * 60 * 60 * 1000,
         secure: true,
-        // Note: This cookie is supposed to be accessed via clientside Javascript code,
-        // so we cannot set it to `httpOnly: true`
-        httpOnly: false,
+        // Offline (`/x/`) pages read meta cookies client-side — the service
+        // worker caches the page, so server-injected values would go stale —
+        // and the cookie is shared across views, so it can only be HttpOnly
+        // when offline is disabled.
+        httpOnly: !req.app.get('offline enabled'),
         sameSite: 'lax',
     };
 
@@ -205,6 +207,16 @@ function _renderWebform(req, res, next, options) {
         deviceId,
         cookieOptions
     );
+
+    // The offline (`/x/`) page is cached by the service worker, so a session
+    // injected at render time could carry stale identity; offline views keep
+    // the legacy client-side cookie read instead.
+    const renderOptions = options.offlinePath
+        ? options
+        : {
+              ...options,
+              session: _getSessionMeta(req, deviceId),
+          };
 
     // Make sure that __enketo_logout cookies have httpOnly: false
     //  so that the logout button is displayed properly.
@@ -219,7 +231,38 @@ function _renderWebform(req, res, next, options) {
         });
     }
 
-    response.render('surveys/webform', options);
+    response.render('surveys/webform', renderOptions);
+}
+
+/**
+ * Builds the /session/context metadata from server-readable signed cookies.
+ *
+ * Only properties that are actually present are included, so that any missing
+ * value falls through to enketo-core's client-side `readCookie()` fallback
+ * instead of being overridden with an empty/placeholder value. Because these
+ * values are read here (server-side), the underlying `__enketo_meta_*` cookies
+ * no longer need to be readable by client-side JavaScript.
+ *
+ * @param {module:api-controller~ExpressRequest} req - HTTP request
+ * @param {string} deviceId - device ID generated or read for this request
+ * @return {Record<string, string>} session metadata keyed by property name
+ */
+function _getSessionMeta(req, deviceId) {
+    const cookieProps = [
+        'username',
+        'email',
+        'phonenumber',
+        'simserial',
+        'subscriberid',
+    ];
+
+    const session = cookieProps.reduce((acc, prop) => {
+        const value = req.signedCookies[`__enketo_meta_${prop}`];
+
+        return value ? { ...acc, [prop]: value } : acc;
+    }, {});
+
+    return deviceId ? { ...session, deviceid: deviceId } : session;
 }
 
 /**

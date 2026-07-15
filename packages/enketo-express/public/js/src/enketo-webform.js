@@ -260,6 +260,7 @@ function _init(formParts) {
             instanceStr: _prepareInstance(formParts.model, settings.defaults),
             external: formParts.externalData,
             survey: formParts,
+            session: window.__enketoSession,
         })
         .then((form) => {
             formParts.languages = form.languages;

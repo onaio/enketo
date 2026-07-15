@@ -121,6 +121,9 @@ function setToken(req, res) {
         signed: true,
         maxAge: 30 * 24 * 60 * 60 * 1000,
         path: '/',
+        // Offline (`/x/`) pages read this cookie client-side, so it can only
+        // be HttpOnly when offline is disabled.
+        httpOnly: !req.app.get('offline enabled'),
     };
 
     if (req.body.remember) {

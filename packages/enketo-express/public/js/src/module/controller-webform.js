@@ -49,6 +49,7 @@ const formOptions = {
  * @property {Survey} survey
  * @property {InstanceAttachment[]} [instanceAttachments]
  * @property {boolean} [isEditing]
+ * @property {Record<string, string>} [session] - /session/context metadata (username, deviceid, etc.) injected server-side
  */
 
 /**
@@ -237,6 +238,7 @@ function _resetForm(survey, options = {}) {
                 {
                     modelStr: formData.modelStr,
                     external: survey.externalData,
+                    session: formData.session,
                 },
                 formOptions
             );
@@ -305,6 +307,7 @@ function _loadRecord(survey, instanceId, confirmed) {
                         instanceStr: record.xml,
                         external: formData.external,
                         submitted: false,
+                        session: formData.session,
                     },
                     formOptions
                 );
