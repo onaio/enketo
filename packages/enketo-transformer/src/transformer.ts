@@ -251,6 +251,11 @@ const correctAction = (
     doc: DOM.Document,
     localName: 'setvalue' | 'setgeopoint' = 'setvalue'
 ) => {
+    // Both corrections below only ever touch these inputs.
+    if (getNodeByXPathExpression(doc, `//input[@data-${localName}]`) == null) {
+        return;
+    }
+
     /*
      * See setvalue.xml (/data/person/age_changed). A <setvalue> inside a form control results
      * in one label.question with a nested label.setvalue which is weird syntax (and possibly invalid HTML).
@@ -377,16 +382,18 @@ const replaceLanguageTags = (doc: DOM.Document) => {
         '/root/form/select[@id="form-languages"]/option'
     );
 
+    const getLanguageSampleText = getLanguageSampleTexts(doc);
+
     // List of parsed language objects
     const languages = languageElements.map((el) => {
         const lang = el.textContent ?? '';
 
-        return parseLanguage(lang, getLanguageSampleText(doc, lang));
+        return parseLanguage(lang, getLanguageSampleText(lang));
     });
 
     // forms without itext and only one language, still need directionality info
     if (languages.length === 0) {
-        languages.push(parseLanguage('', getLanguageSampleText(doc, '')));
+        languages.push(parseLanguage('', getLanguageSampleText('')));
     }
 
     // add or correct dir and value attributes, and amend textcontent of options in language selector
@@ -403,17 +410,21 @@ const replaceLanguageTags = (doc: DOM.Document) => {
     });
 
     // correct lang attributes
-    languages.forEach(({ sourceLanguage, tag }) => {
-        if (sourceLanguage === tag) {
-            return;
-        }
-        getNodesByXPathExpression(
-            doc,
-            `/root/form//*[@lang="${sourceLanguage}"]`
-        ).forEach((el) => {
-            el.setAttribute('lang', tag);
+    const tagsBySourceLanguage = new Map(
+        languages
+            .filter(({ sourceLanguage, tag }) => sourceLanguage !== tag)
+            .map(({ sourceLanguage, tag }) => [sourceLanguage, tag])
+    );
+
+    if (tagsBySourceLanguage.size > 0) {
+        getNodesByXPathExpression(doc, '/root/form//*[@lang]').forEach((el) => {
+            const tag = tagsBySourceLanguage.get(el.getAttribute('lang') ?? '');
+
+            if (tag != null) {
+                el.setAttribute('lang', tag);
+            }
         });
-    });
+    }
 
     // correct default lang attribute
     const langSelectorElement = getNodeByXPathExpression(
@@ -439,22 +450,34 @@ const replaceLanguageTags = (doc: DOM.Document) => {
 };
 
 /**
- * Obtains a non-empty hint text or other text sample of a particular form language.
+ * Returns a lookup of a non-empty hint text, or failing that any other text
+ * sample, for each form language.
  */
-const getLanguageSampleText = (doc: DOM.Document, language: string) => {
-    // First find non-empty text content of a hint with that lang attribute.
-    // If not found, find any span with that lang attribute.
-    const langSampleEl =
-        getNodeByXPathExpression(
-            doc,
-            `/root/form//span[contains(@class, "or-hint") and @lang="${language}" and normalize-space() and not(./text() = '-')]`
-        ) ||
-        getNodeByXPathExpression(
-            doc,
-            `/root/form//span[@lang="${language}" and normalize-space() and not(./text() = '-')]`
-        );
+const getLanguageSampleTexts = (doc: DOM.Document) => {
+    const hintSamples = new Map<string, DOM.Element>();
+    const otherSamples = new Map<string, DOM.Element>();
 
-    return langSampleEl?.textContent?.trim() || 'nothing';
+    getNodesByXPathExpression(
+        doc,
+        `/root/form//span[@lang and normalize-space() and not(./text() = '-')]`
+    ).forEach((el) => {
+        const language = el.getAttribute('lang') ?? '';
+        const isHint = (el.getAttribute('class') ?? '').includes('or-hint');
+
+        if (isHint && !hintSamples.has(language)) {
+            hintSamples.set(language, el);
+        }
+        if (!otherSamples.has(language)) {
+            otherSamples.set(language, el);
+        }
+    });
+
+    return (language: string) => {
+        const langSampleEl =
+            hintSamples.get(language) ?? otherSamples.get(language);
+
+        return langSampleEl?.textContent?.trim() || 'nothing';
+    };
 };
 
 /**
@@ -557,25 +580,44 @@ const renderMarkdown = (
         }
     });
 
-    let htmlStr = docToString(htmlDoc);
+    // Rendered Markdown can contain output placeholders, so it goes in first.
+    const htmlStr = replacePlaceholders(
+        docToString(htmlDoc),
+        '$$$',
+        replacements
+    );
 
-    // Now replace the placeholders with the rendered HTML
-    // in reverse order so outputs are done last
-    Object.keys(replacements)
-        .reverse()
-        .forEach((key) => {
+    return replacePlaceholders(htmlStr, '---output-', replacements);
+};
+
+/**
+ * Replaces the first occurrence of each `<prefix><index>` placeholder in a
+ * single pass. When the digits after the prefix could name more than one
+ * placeholder, the longest one wins.
+ */
+const replacePlaceholders = (
+    html: string,
+    prefix: string,
+    replacements: Record<string, string>
+) => {
+    const escapedPrefix = prefix.replace(/[$-]/g, '\\$&');
+    const pattern = new RegExp(`${escapedPrefix}(\\d+)`, 'g');
+    const used = new Set<string>();
+
+    return html.replace(pattern, (match, digits: string) => {
+        for (let end = digits.length; end > 0; end -= 1) {
+            const key = `${prefix}${digits.slice(0, end)}`;
             const replacement = replacements[key];
-            if (replacement) {
-                /**
-                 * The replacement is called as a function here so special string
-                 * replacement sequences are preserved if they appear within Markdown.
-                 *  @see {@link https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/replace#specifying_a_string_as_the_replacement}
-                 */
-                htmlStr = htmlStr.replace(key, () => replacement);
-            }
-        });
 
-    return htmlStr;
+            if (replacement && !used.has(key)) {
+                used.add(key);
+
+                return replacement + digits.slice(end);
+            }
+        }
+
+        return match;
+    });
 };
 
 const docToString = (doc: DOM.Document) => {
@@ -664,6 +706,25 @@ const processItemsets = (xformDoc: DOM.Document) => {
         '//xmlns:itemset',
         NAMESPACES
     );
+    // Selects sharing a choice list share a label path.
+    const itemsByLabelPath = new Map<string, DOM.Element[]>();
+    const getItems = (labelPath: string) => {
+        const cached = itemsByLabelPath.get(labelPath);
+
+        if (cached != null) {
+            return cached;
+        }
+
+        const items = getNodesByXPathExpression(
+            xformDoc,
+            labelPath,
+            NAMESPACES
+        );
+
+        itemsByLabelPath.set(labelPath, items);
+
+        return items;
+    };
 
     itemsets.forEach((itemset) => {
         const valueEl = getNodeByXPathExpression(
@@ -721,13 +782,9 @@ const processItemsets = (xformDoc: DOM.Document) => {
                 /\/xf:/g,
                 '/xmlns:'
             )}/*[name() = "${labelNodeName}"]`;
-            const items = getNodesByXPathExpression(
-                xformDoc,
-                labelPath,
-                NAMESPACES
+            itemset.append(
+                ...getItems(labelPath).map((item) => item.cloneNode(true))
             );
-
-            itemset.append(...items.map((item) => item.cloneNode(true)));
         }
     });
 };
