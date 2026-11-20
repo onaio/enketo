@@ -4,6 +4,8 @@
  * @module utils
  */
 
+import config from 'enketo/config';
+
 let cookies;
 
 /**
@@ -73,22 +75,35 @@ function stripQuotes(str) {
  * @static
  * @param {object} file - File instance
  * @param {string} postfix - postfix for filename
+ * @param {number} [maxLength] - maximum filename length in characters; the
+ *     base name is shortened to fit, keeping the postfix and extension
  * @return {string} new filename
  */
-function getFilename(file, postfix) {
-    if (typeof file === 'object' && file !== null && file.name) {
-        postfix = postfix || '';
-        const filenameParts = file.name.split('.');
-        if (filenameParts.length > 1) {
-            filenameParts[filenameParts.length - 2] += postfix;
-        } else if (filenameParts.length === 1) {
-            filenameParts[0] += postfix;
-        }
-
-        return filenameParts.join('.');
+function getFilename(file, postfix, maxLength = config.filenameMaxChars) {
+    if (typeof file !== 'object' || file === null || !file.name) {
+        return '';
     }
 
-    return '';
+    const suffix = postfix || '';
+    const dotIndex = file.name.lastIndexOf('.');
+    const hasExtension = dotIndex !== -1;
+    const base = Array.from(
+        hasExtension ? file.name.slice(0, dotIndex) : file.name
+    );
+    const extension = Array.from(hasExtension ? file.name.slice(dotIndex) : '');
+    const fullName = [...base, ...suffix, ...extension];
+
+    if (!(maxLength > 0) || fullName.length <= maxLength) {
+        return fullName.join('');
+    }
+
+    const baseBudget = maxLength - Array.from(suffix).length - extension.length;
+
+    if (baseBudget < 0) {
+        return fullName.slice(0, maxLength).join('');
+    }
+
+    return [...base.slice(0, baseBudget), ...suffix, ...extension].join('');
 }
 
 /**

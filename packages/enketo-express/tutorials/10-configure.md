@@ -208,6 +208,10 @@ The default value is `100kb`.
 
 Sets the maximum allowable text field characters with a default of 2000. This settings is meant to match any back-end database limits to avoid a situation where records cannot be submitted because the server does not accept them.
 
+## attachment file name character limit
+
+Sets the maximum length of attachment file names, with a default of 96. Longer names are shortened when a file is added to a form, keeping the extension. To avoid rejected records, set it to the server's limit minus 4, since encrypted forms upload each attachment with `.enc` added. Use `0` for no limit.
+
 ## frameguard deny
 
 Set to `true` to set the X-Frame-Options header to DENY to help you mitigate clickjacking attacks. Default is `false`. See more here: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options

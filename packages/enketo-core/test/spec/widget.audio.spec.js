@@ -7,6 +7,7 @@ import {
     testBasicInstantiation,
 } from '../helpers/test-widget';
 import { waitFor } from '../helpers/wait-for';
+import config from 'enketo/config';
 import { getCachedFile } from '../../src/js/utils';
 
 const FORM = `<form class="or">
@@ -171,6 +172,20 @@ describe('AudioWidget', () => {
             const b = widget.postFixFilename('recording.webm');
             expect(a).to.match(/^recording-\d{8}_\d{6}\.webm$/);
             expect(b).to.match(/^recording-\d{8}_\d{6}\.webm$/);
+        });
+
+        it('shortens long names to config.filenameMaxChars, keeping postfix and extension', () => {
+            const { widget } = createWidget();
+            const original = config.filenameMaxChars;
+            config.filenameMaxChars = 30;
+
+            try {
+                const result = widget.postFixFilename(`${'a'.repeat(120)}.mp3`);
+
+                expect(result).to.match(/^a{10}-\d{8}_\d{6}\.mp3$/);
+            } finally {
+                config.filenameMaxChars = original;
+            }
         });
 
         it('produces a name that differs from the original', () => {

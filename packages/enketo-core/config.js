@@ -35,4 +35,9 @@ export default /** @type {const} */ ({
     validatePage: true,
     swipePage: true,
     textMaxChars: 2000,
+    /**
+     * Maximum attachment file name length in characters. Set it to the server's
+     * limit so submissions with long file names are not rejected. 0 means no limit.
+     */
+    filenameMaxChars: 0,
 });

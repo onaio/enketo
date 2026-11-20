@@ -1,3 +1,4 @@
+import config from 'enketo/config';
 import * as utils from '../../src/js/utils';
 
 describe('Parsing expressions', () => {
@@ -90,6 +91,62 @@ describe('return postfixed filenames', () => {
 
             expect(utils.getFilename(file, postfix)).to.deep.equal(expected);
         });
+    });
+});
+
+describe('return filenames shortened to a maximum length', () => {
+    const postfix = '-12_34_56';
+    const longBase = 'a'.repeat(120);
+
+    [
+        [`${longBase}.jpg`, 20, `${'a'.repeat(7)}${postfix}.jpg`],
+        [longBase, 20, `${'a'.repeat(11)}${postfix}`],
+        ['my.long.name.jpg', 18, `my.lo${postfix}.jpg`],
+        ['short.jpg', 20, `short${postfix}.jpg`],
+        [`${longBase}.jpg`, 0, `${longBase}${postfix}.jpg`],
+        [`${longBase}.jpg`, undefined, `${longBase}${postfix}.jpg`],
+        ['abc.averyveryverylongextension', 10, 'abc-12_34_'],
+    ].forEach(([name, maxLength, expected]) => {
+        it(`shortens ${name.length}-char ${name.slice(
+            -5
+        )} to ${maxLength}`, () => {
+            const result = utils.getFilename({ name }, postfix, maxLength);
+
+            expect(result).to.equal(expected);
+            if (maxLength) {
+                expect(result.length).to.be.at.most(maxLength);
+            }
+        });
+    });
+
+    it('does not split a character made of two UTF-16 code units', () => {
+        const result = utils.getFilename({ name: '😀😀😀😀.jpg' }, '-1', 9);
+
+        expect(result).to.equal('😀😀😀-1.jpg');
+        expect(Array.from(result).length).to.equal(9);
+    });
+
+    it('takes the maximum length from config.filenameMaxChars by default', () => {
+        const original = config.filenameMaxChars;
+        config.filenameMaxChars = 20;
+
+        try {
+            expect(
+                utils.getFilename({ name: `${longBase}.jpg` }, postfix)
+            ).to.equal(`${'a'.repeat(7)}${postfix}.jpg`);
+        } finally {
+            config.filenameMaxChars = original;
+        }
+    });
+
+    it('leaves a name that already fits unchanged when called again without a postfix', () => {
+        const once = utils.getFilename(
+            { name: `${longBase}.jpg` },
+            postfix,
+            20
+        );
+
+        expect(utils.getFilename({ name: once }, undefined, 20)).to.equal(once);
     });
 });
 
