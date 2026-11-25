@@ -4,6 +4,7 @@ import AudioRecorder from '../../js/audio-recorder/audio-recorder';
 import { formatTimeMMSS } from '../../js/format';
 import dialog from 'enketo/dialog';
 import fileManager from 'enketo/file-manager';
+import { setCachedFile, getCachedFile } from '../../js/utils';
 
 /**
  * AudioWidget that extends the Widget class to handle audio recording and playback.
@@ -25,10 +26,13 @@ class AudioWidget extends Widget {
         const existingFilename = this.element.dataset.loadedFileName;
         this.existingFileUrl = null;
 
+        this.isDestroyed = false;
+
         this.audioRecorder = new AudioRecorder();
         this.audioQuality = this.element.dataset.quality || 'normal'; // Get audio quality from data attribute
         this.fileName = existingFilename || ''; // A filename to be used for data validation purposes
         this.audioBlob = null; // To store the recorded audio blob
+        this.audioPlayer = null; // The playback player, see showPlaybackStep()
 
         this.element.classList.add('hidden');
         this.element.dataset.audio = 'true'; // Indicate that this is an audio recording widget
@@ -52,8 +56,25 @@ class AudioWidget extends Widget {
             // Handle file input change event for uploading audio files
             const file = event.target.files[0];
             if (file) {
-                await this.updateValue(file); // Update the widget with the uploaded file
-                this.fileName = file.name; // Update the filename from the uploaded file
+                const isValid = await this.isValidAudioFile(file);
+                if (!isValid) {
+                    this.element.type = 'text';
+                    this.showActionSelectStep();
+                    dialog.alert(
+                        t('audioRecording.error.invalidAudioFile.msg'),
+                        t('audioRecording.error.invalidAudioFile.heading'),
+                        'normal'
+                    );
+                    return;
+                }
+                this.updateValue(file); // Update the widget with the uploaded file
+                this.fileName = this.postFixFilename(file.name); // Update the filename with a unique timestamp postfix
+                // Restore type to 'text' so getCurrentFiles() uses the cached file
+                // instead of the original files[0] reference (which would lose the postfixed name)
+                this.element.type = 'text';
+                // Set the postfixed filename in the form model so the submission XML
+                // references the renamed file, matching what getCurrentFiles() provides
+                this.originalInputValue = this.fileName;
                 this.showPlaybackStep();
             }
         });
@@ -77,6 +98,7 @@ class AudioWidget extends Widget {
             }
 
             this.updateValue(null); // Clear the current value
+            this.revokeExistingFileUrl();
             this.existingFileUrl = file; // Store the URL for playback
             this.originalInputValue = existingFileName;
             this.showPlaybackStep();
@@ -86,25 +108,29 @@ class AudioWidget extends Widget {
         }
     }
 
-    async updateValue(audioBlob) {
+    updateValue(audioBlob) {
         this.audioBlob = audioBlob; // Update the audio blob
-        this.value = await this.getDataURL();
+        // The file is kept as a Blob instead of a data URL. For long recordings
+        // a data URL is a huge string that needs to be decoded back into a Blob
+        // synchronously by the file manager, which can freeze the browser.
+        this.value = audioBlob;
     }
 
     /**
-     * Gets the current value of the audio widget.
+     * Gets the recorded or uploaded audio file.
+     * @returns {Blob|null} The audio file, if any.
      */
     get value() {
-        return this.element.dataset.cache || '';
+        return getCachedFile(this.element) || null;
     }
 
     /**
-     * Sets the value of the audio widget.
-     * @param {string} dataUrl - The data URL of the audio file.
+     * Sets the recorded or uploaded audio file.
+     * @param {Blob|string|null} blob - The audio file. Any non-Blob value clears it.
      */
-    set value(dataUrl) {
-        // dataset-cache is used by the filemanager to extract the file data
-        this.element.dataset.cache = dataUrl || '';
+    set value(blob) {
+        // The file manager obtains the file to submit from the cached file
+        setCachedFile(this.element, blob instanceof Blob ? blob : null);
     }
 
     /**
@@ -140,6 +166,57 @@ class AudioWidget extends Widget {
     }
 
     /**
+     * Cleans up the widget instance. This is called when the form is reset.
+     * Stops any recording in progress and releases the microphone and the audio graph.
+     */
+    cleanup() {
+        this.isDestroyed = true;
+        this.stopWatchingAudioRecording();
+        this.audioRecorder.dispose();
+        this.releaseAudioPlayer();
+        this.revokePlaybackUrl();
+        this.revokeExistingFileUrl();
+        // The widget instance can stay referenced after a form reset,
+        // so drop the file too, like BackgroundAudio.cleanup() does
+        this.updateValue(null);
+    }
+
+    /**
+     * Stops the playback player and releases its resources. The player is not part
+     * of the form, so it isn't paused or released when the form is reset.
+     */
+    releaseAudioPlayer() {
+        if (this.audioPlayer) {
+            this.audioPlayer.pause();
+            this.audioPlayer.removeAttribute('src');
+            this.audioPlayer.load();
+            this.audioPlayer = null;
+        }
+    }
+
+    /**
+     * Releases the object URL used to play the audio file, so the file
+     * can be garbage collected.
+     */
+    revokePlaybackUrl() {
+        if (this.playbackUrl) {
+            URL.revokeObjectURL(this.playbackUrl);
+            this.playbackUrl = null;
+        }
+    }
+
+    /**
+     * Releases the URL of a previously saved file. The file manager creates a new
+     * object URL for each call, so it's ours to revoke. Server URLs are left alone.
+     */
+    revokeExistingFileUrl() {
+        if (this.existingFileUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(this.existingFileUrl);
+        }
+        this.existingFileUrl = null;
+    }
+
+    /**
      * Sets the content of the audio widget.
      * This is used to update the widget's inner HTML with the provided fragment.
      *
@@ -159,17 +236,17 @@ class AudioWidget extends Widget {
     showActionSelectStep() {
         this.updateValue(null);
         this.element.type = 'text'; // Will consider the input as a text for validation purposes
-        this.existingFileUrl = null; // Reset existing file URL
+        this.revokeExistingFileUrl();
 
         const stepFragment = document.createRange().createContextualFragment(
             `<div class="step-action-select">
                 <div class="button-group">
-                    <button class="btn-record btn btn-primary small">
+                    <button type="button" class="btn-record btn btn-primary small">
                     <i class="icon icon-volume-down"></i> ${t(
                         'audioRecording.startRecording'
                     )}
                     </button>
-                    <button class="btn-upload btn btn-default small">
+                    <button type="button" class="btn-upload btn btn-default small">
                     <i class="icon icon-upload"></i> ${t(
                         'audioRecording.uploadAudioFile'
                     )}
@@ -187,6 +264,13 @@ class AudioWidget extends Widget {
             // Request permissions first
             try {
                 await this.audioRecorder.requestPermissions(this.audioQuality);
+
+                // The form may have been reset while waiting for the user
+                if (this.isDestroyed) {
+                    this.audioRecorder.dispose();
+                    return;
+                }
+
                 errorMessage.classList.add('hidden');
                 this.showRecordStep();
             } catch (error) {
@@ -221,13 +305,13 @@ class AudioWidget extends Widget {
                     </div>
                     <canvas class="audio-waveform"></canvas>
                     <div class="recording-controls">
-                        <button class="btn-icon-only btn-pause">
+                        <button type="button" class="btn-icon-only btn-pause">
                             <i class="icon icon-pause"></i>
                         </button>
-                        <button class="btn-icon-only btn-resume hidden">
+                        <button type="button" class="btn-icon-only btn-resume hidden">
                             <i class="icon icon-microphone"></i>
                         </button>
-                        <button class="btn-icon-only btn-stop">
+                        <button type="button" class="btn-icon-only btn-stop">
                             <i class="icon icon-stop"></i>
                         </button>
                     </div>
@@ -255,13 +339,14 @@ class AudioWidget extends Widget {
 
         buttonStop.addEventListener('click', async () => {
             await this.audioRecorder.stopRecording();
+            this.stopWatchingAudioRecording();
 
             this.setValidationError(null); // Clear previous validation error
 
             const blob = await this.audioRecorder.getRecordedFile(); // Store the recorded audio file
 
             this.fileName = this.getFileName(); // Get the filename for the recording
-            await this.updateValue(blob); // Update the widget with the recorded audio blob
+            this.updateValue(blob); // Update the widget with the recorded audio blob
 
             // originalInputValue needs to be set AFTER setting widget value (updateValue())
             // because it triggers enketo's record autosave
@@ -323,23 +408,23 @@ class AudioWidget extends Widget {
         const stepFragment = document.createRange().createContextualFragment(
             `<div class="step-preview">
                 <div class="audio-preview">
-                    <button class="btn-icon-only btn-play">
+                    <button type="button" class="btn-icon-only btn-play">
                         <i class="icon icon-play"></i>
                     </button>
-                    <button class="btn-icon-only btn-pause hidden">
+                    <button type="button" class="btn-icon-only btn-pause hidden">
                         <i class="icon icon-pause"></i>
                     </button>
-                    <span class="time-progress">00:00 / 1:24</span>
+                    <span class="time-progress">00:00 / 0:00</span>
                     <div class="seek-bar">
                         <div class="play-progress">
                             <div class="progress-bar"></div>
                         </div>
                     </div>
                 </div>
-                <button class="btn-icon-only btn-download">
+                <button type="button" class="btn-icon-only btn-download">
                     <i class="icon icon-download"></i>
                 </button>
-                <button class="btn-icon-only btn-delete">
+                <button type="button" class="btn-icon-only btn-delete">
                     <i class="icon icon-trash"></i>
                 </button>
             </div>`
@@ -353,7 +438,9 @@ class AudioWidget extends Widget {
         const seekBar = stepFragment.querySelector('.seek-bar');
         const progressBar = stepFragment.querySelector('.progress-bar');
 
+        this.releaseAudioPlayer();
         const audioPlayer = new Audio();
+        this.audioPlayer = audioPlayer;
 
         audioPlayer.addEventListener('loadedmetadata', () => {
             // Update the time display when metadata is loaded
@@ -430,6 +517,7 @@ class AudioWidget extends Widget {
                     if (confirmed) {
                         audioPlayer.pause(); // Pause the audio if it's playing
                         URL.revokeObjectURL(audioPlayer.src); // Revoke the object URL
+                        this.playbackUrl = null;
                         audioPlayer.removeAttribute('src'); // Remove the source attribute
                         audioPlayer.load(); // Release resources
                         this.audioBlob = null; // Clear the audio blob
@@ -439,8 +527,13 @@ class AudioWidget extends Widget {
                 });
         });
 
-        audioPlayer.src =
-            this.existingFileUrl || URL.createObjectURL(this.audioBlob);
+        this.revokePlaybackUrl();
+        if (this.existingFileUrl) {
+            audioPlayer.src = this.existingFileUrl;
+        } else {
+            this.playbackUrl = URL.createObjectURL(this.audioBlob);
+            audioPlayer.src = this.playbackUrl;
+        }
 
         this.setWidgetContent(stepFragment);
     }
@@ -456,31 +549,64 @@ class AudioWidget extends Widget {
             this.element.name.lastIndexOf('/') + 1
         );
         const baseFileName = `${fileName || 'audio-recording'}`;
+        return this.postFixFilename(`${baseFileName}.webm`);
+    }
+
+    /**
+     * This function adds a timestamp postfix to the filename in the format: `-YYYYMMDD_HHMMSS`.
+     * This is important because we cannot have multiple files with the same name in the file manager,
+     * and this ensures that each recording has a unique filename, for cases where the
+     * user may upload the same file for multiple questions in the same form.
+     *
+     * @param {string} filename - The original filename.
+     * @returns {string} - The filename with a timestamp postfix.
+     */
+    postFixFilename(filename) {
+        // Breaks down the file name
+        const nameParts = filename.split('.');
+        const baseName = nameParts.slice(0, -1).join('.'); // Get the base name without extension
+        const extension = nameParts.slice(-1)[0]; // Get the file extension
+
         const timestamp = new Date()
             .toISOString()
             .replace(/\D/g, '')
             .slice(0, 14);
-        const postfix = `-${timestamp.slice(0, 8)}_${timestamp.slice(8)}`;
-        return `${baseFileName}${postfix}.webm`;
+        return `${baseName}-${timestamp.slice(0, 8)}_${timestamp.slice(
+            8
+        )}.${extension}`;
     }
 
     /**
-     * This method retrieves the data URL of the recorded audio blob.
-     * It reads the blob as a data URL using FileReader.
-     * @returns {Promise<string|null>} - A promise that resolves to the data URL of the audio blob,
-     * or null if no audio blob is available.
+     * Checks whether the given file can be decoded as audio by the browser.
+     * Creates a temporary Audio element and attempts to load the file,
+     * resolving to true on success or false on error.
+     *
+     * @param {File} file - The file to verify.
+     * @returns {Promise<boolean>} - Resolves to true if the file is playable audio, false otherwise.
      */
-    async getDataURL() {
-        if (this.audioBlob) {
-            return new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    resolve(event.target.result);
-                };
-                reader.readAsDataURL(this.audioBlob);
-            });
-        }
-        return Promise.resolve(null);
+    isValidAudioFile(file) {
+        return new Promise((resolve) => {
+            const url = URL.createObjectURL(file);
+            const audio = new Audio();
+            const cleanup = () => URL.revokeObjectURL(url);
+            audio.addEventListener(
+                'canplay',
+                () => {
+                    cleanup();
+                    resolve(true);
+                },
+                { once: true }
+            );
+            audio.addEventListener(
+                'error',
+                () => {
+                    cleanup();
+                    resolve(false);
+                },
+                { once: true }
+            );
+            audio.src = url;
+        });
     }
 
     /**
@@ -490,9 +616,14 @@ class AudioWidget extends Widget {
      * @param {HTMLElement} timeDisplay - The element to display the recording time.
      */
     watchAudioRecording(timeDisplay) {
-        const ctx = new AudioContext();
-        const source = ctx.createMediaStreamSource(this.audioRecorder.stream);
-        const analyser = ctx.createAnalyser();
+        this.stopWatchingAudioRecording();
+
+        // Keep a reference so the context (and its audio graph) can be closed
+        this.audioContext = new AudioContext();
+        const source = this.audioContext.createMediaStreamSource(
+            this.audioRecorder.stream
+        );
+        const analyser = this.audioContext.createAnalyser();
 
         source.connect(analyser);
 
@@ -510,7 +641,8 @@ class AudioWidget extends Widget {
             // This function updates the recording time and plots the audio data
             if (this.audioRecorder.isPaused()) {
                 // No update is needed if recording is paused
-                requestAnimationFrame(updateRecordingInfo);
+                this.animationFrameId =
+                    requestAnimationFrame(updateRecordingInfo);
                 return;
             }
             timeDisplay.textContent =
@@ -532,10 +664,29 @@ class AudioWidget extends Widget {
             // Request the next animation frame to keep updating
             // while recording is active.
             if (this.audioRecorder.isRecording()) {
-                requestAnimationFrame(updateRecordingInfo);
+                this.animationFrameId =
+                    requestAnimationFrame(updateRecordingInfo);
             }
         };
         updateRecordingInfo();
+    }
+
+    /**
+     * Stops updating the recording time and waveform preview, and releases
+     * the audio context used to analyse the recording.
+     */
+    stopWatchingAudioRecording() {
+        if (this.animationFrameId) {
+            cancelAnimationFrame(this.animationFrameId);
+            this.animationFrameId = null;
+        }
+
+        if (this.audioContext) {
+            this.audioContext.close().catch(() => {
+                // Ignore, the context may already be closed
+            });
+            this.audioContext = null;
+        }
     }
 
     /**

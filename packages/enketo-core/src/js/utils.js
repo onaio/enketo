@@ -163,6 +163,40 @@ function dataUriToBlobSync(dataURI) {
 }
 
 /**
+ * Files attached to form controls as Blobs, so that file managers can get them
+ * without decoding a (potentially huge) data URI stored in `data-cache`.
+ *
+ * @type {WeakMap<HTMLInputElement, Blob>}
+ */
+const cachedFiles = new WeakMap();
+
+/**
+ * Attaches a file to a form control, or removes it if `file` is empty.
+ *
+ * @static
+ * @param {HTMLInputElement} control - The form control
+ * @param {Blob|null} file - The file
+ */
+function setCachedFile(control, file) {
+    if (file) {
+        cachedFiles.set(control, file);
+    } else {
+        cachedFiles.delete(control);
+    }
+}
+
+/**
+ * Obtains the file attached to a form control with `setCachedFile()`.
+ *
+ * @static
+ * @param {HTMLInputElement} control - The form control
+ * @return {Blob|undefined} The file
+ */
+function getCachedFile(control) {
+    return cachedFiles.get(control);
+}
+
+/**
  * Regex matching characters that are not valid in XML 1.0.
  *
  * @see https://www.w3.org/TR/REC-xml/#charsets
@@ -289,76 +323,6 @@ function encodeHtmlEntities(text) {
         .replace(/"/g, '&quot;');
 }
 
-// Dangerous SVG elements that should be removed for security
-const DANGEROUS_SVG_ELEMENTS = [
-    'script',
-    'foreignObject',
-    'iframe',
-    'object',
-    'embed',
-    'link',
-    'meta',
-    'style',
-];
-
-/**
- * Sanitizes SVG content by removing potentially dangerous elements and attributes
- * @param {Element} svgElement - The SVG element to sanitize
- * @return {Element} The sanitized SVG element
- */
-function sanitizeSvg(svgElement) {
-    if (!svgElement) {
-        return svgElement;
-    }
-
-    // Clone the element to avoid modifying the original
-    const sanitizedSvg = svgElement.cloneNode(true);
-
-    // Function to remove attributes that start with "on" (event handlers)
-    const removeEventHandlerAttributes = (element) => {
-        if (!element || !element.attributes) {
-            return;
-        }
-        for (let attr of element.attributes) {
-            if (attr.name.toLowerCase().startsWith('on')) {
-                element.removeAttribute(attr.name);
-            }
-        }
-    };
-
-    // Remove dangerous elements
-    DANGEROUS_SVG_ELEMENTS.forEach((tagName) => {
-        const elements = sanitizedSvg.querySelectorAll(tagName);
-        elements.forEach((el) => el.remove());
-    });
-
-    // Process root and all child elements
-    const allElements = [
-        sanitizedSvg,
-        ...Array.from(sanitizedSvg.querySelectorAll('*')),
-    ];
-
-    allElements.forEach((element) => {
-        // Make sure we're dealing with an actual Element node and not the Document root
-        if (!(element instanceof SVGElement)) return;
-
-        removeEventHandlerAttributes(element);
-
-        // Sanitize href and xlink:href attributes to prevent javascript: URLs
-        ['href', 'xlink:href'].forEach((attr) => {
-            if (element.hasAttribute(attr)) {
-                const href = element.getAttribute(attr);
-                // eslint-disable-next-line no-script-url
-                if (href && href.toLowerCase().startsWith('javascript:')) {
-                    element.removeAttribute(attr);
-                }
-            }
-        });
-    });
-
-    return sanitizedSvg;
-}
-
 export {
     parseFunctionFromExpression,
     stripQuotes,
@@ -366,11 +330,12 @@ export {
     isNumber,
     readCookie,
     dataUriToBlobSync,
+    setCachedFile,
+    getCachedFile,
     getPasteData,
     stripInvalidXmlCharacters,
     resizeImage,
     joinPath,
     getScript,
     encodeHtmlEntities,
-    sanitizeSvg,
 };

@@ -253,6 +253,19 @@ describe('Records queue', () => {
                 .then(done, done);
         });
 
+        it('saves a record even when its survey is missing from the form cache', (done) => {
+            // Simulates the survey cache being unavailable, e.g. after an
+            // unexpected IndexedDB connection reset that clears stored data.
+            store.survey
+                .remove(enketoId)
+                .then(() => records.save('set', recordA))
+                .then(() => store.record.get(instanceIdA))
+                .then((record) => {
+                    expect(record.instanceId).to.equal(instanceIdA);
+                })
+                .then(done, done);
+        });
+
         describe('file handling when no auto-saved record exists', () => {
             beforeEach((done) => {
                 // Remove any existing auto-saved record
@@ -735,6 +748,104 @@ describe('Records queue', () => {
                     });
                 }
             );
+
+            describe('with multiple queued records', () => {
+                /** @type {EnketoRecord} */
+                let recordC;
+
+                /** @type {string[]} */
+                let attempted;
+
+                beforeEach(() => {
+                    recordC = {
+                        ...recordA,
+                        files: [],
+                        instanceId: 'c',
+                        name: 'name C',
+                        xml: '<model><something>c</something></model>',
+                    };
+                    queue = [recordA, recordB, recordC];
+                    attempted = [];
+
+                    store.record.remove.callsFake(async (instanceId) => {
+                        queue = queue.filter(
+                            (item) => item.instanceId !== instanceId
+                        );
+                    });
+                });
+
+                /**
+                 * @param {(record: EnketoRecord) => boolean} shouldFail
+                 */
+                const failWhen = (shouldFail) => {
+                    connectionUploadQueuedRecordStub.callsFake(
+                        async (record) => {
+                            attempted.push(record.instanceId);
+
+                            if (shouldFail(record)) {
+                                throw new TypeError('Failed to fetch');
+                            }
+
+                            uploaded.push(record);
+                        }
+                    );
+                };
+
+                it('stops at the first failure and only attempts one record per retry', async () => {
+                    failWhen(() => true);
+
+                    await records.uploadQueue();
+
+                    expect(attempted).to.deep.equal([instanceIdA]);
+
+                    for await (const delay of delays.slice(0, 5)) {
+                        attempted = [];
+
+                        await timers.tickAsync(delay);
+
+                        expect(attempted.length).to.equal(1);
+                    }
+                });
+
+                it('starts each retry with the record after the last failed one, wrapping around', async () => {
+                    failWhen(() => true);
+
+                    await records.uploadQueue();
+                    await timers.tickAsync(delays[0]);
+                    await timers.tickAsync(delays[1]);
+                    await timers.tickAsync(delays[2]);
+
+                    expect(attempted).to.deep.equal([
+                        instanceIdA,
+                        instanceIdB,
+                        'c',
+                        instanceIdA,
+                    ]);
+                });
+
+                it('does not let a broken record block the rest of the queue', async () => {
+                    failWhen((record) => record.instanceId === instanceIdA);
+
+                    await records.uploadQueue();
+
+                    expect(attempted).to.deep.equal([instanceIdA]);
+
+                    attempted = [];
+                    await timers.tickAsync(delays[0]);
+
+                    expect(attempted).to.deep.equal([
+                        instanceIdB,
+                        'c',
+                        instanceIdA,
+                    ]);
+                    expect(queue).to.deep.equal([recordA]);
+
+                    attempted = [];
+                    await timers.tickAsync(delays[1]);
+
+                    expect(attempted).to.deep.equal([instanceIdA]);
+                });
+            });
 
             it('does not retry for authentication failures', async () => {
                 connectionUploadQueuedRecordStub.callsFake(() =>

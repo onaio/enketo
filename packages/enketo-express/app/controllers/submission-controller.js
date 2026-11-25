@@ -76,7 +76,7 @@ async function submit(req, res, next) {
         const survey = await surveyModel.get(id);
         const submissionUrl =
             communicator.getSubmissionUrl(survey.openRosaServer) + query;
-        const credentials = userModel.getCredentials(req);
+        const credentials = await userModel.getCredentials(req);
         const authHeader = await communicator.getAuthHeader(
             submissionUrl,
             credentials
@@ -105,9 +105,8 @@ async function submit(req, res, next) {
                     _logSubmission(id, instanceId, deprecatedId);
                 } else if (orResponse.statusCode === 401) {
                     // replace the www-authenticate header to avoid browser built-in authentication dialog
-                    orResponse.headers[
-                        'WWW-Authenticate'
-                    ] = `enketo${orResponse.headers['WWW-Authenticate']}`;
+                    orResponse.headers['WWW-Authenticate'] =
+                        `enketo${orResponse.headers['WWW-Authenticate']}`;
                 }
             })
             .on('error', (error) => {
@@ -153,9 +152,9 @@ function maxSize(req, res, next) {
     } else {
         surveyModel
             .get(req.enketoId)
-            .then((survey) => {
+            .then(async (survey) => {
                 survey.cookie = req.headers.cookie;
-                survey.credentials = userModel.getCredentials(req);
+                survey.credentials = await userModel.getCredentials(req);
 
                 return survey;
             })
@@ -192,7 +191,7 @@ async function getInstance(req, res, next) {
         const instanceAttachments = await mediaLib.getMediaMap(
             instance.instanceId,
             instance.instanceAttachments,
-            mediaLib.getHostURLOptions(req)
+            await mediaLib.getHostURLOptions(req)
         );
 
         res.json({

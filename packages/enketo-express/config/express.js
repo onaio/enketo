@@ -18,6 +18,7 @@ const debug = require('debug')('enketo:express');
 const config = require('../app/models/config-model');
 
 // general
+app.disable('x-powered-by');
 for (const item in config.server) {
     if (Object.prototype.hasOwnProperty.call(config.server, item)) {
         app.set(item, app.get(item) || config.server[item]);
@@ -41,12 +42,14 @@ i18next
     .init({
         // debug: true, // DEBUG
         supportedLngs: app.get('languages supported'),
-        fallbackLng: 'en',
+        fallbackLng: ['en'],
+        // Transifex sends untranslated strings as empty, fall back to English for them
+        returnEmptyString: false,
         joinArrays: '\n',
         backend: {
             loadPath: path.resolve(
                 __dirname,
-                '../locales/build/__lng__/translation-combined.json'
+                '../locales/build/{{lng}}/translation-combined.json'
             ),
         },
         load: 'languageOnly',

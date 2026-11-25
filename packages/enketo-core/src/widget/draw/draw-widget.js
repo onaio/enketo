@@ -9,7 +9,11 @@ import dialog from 'enketo/dialog';
 import support from '../../js/support';
 import events from '../../js/event';
 import Widget from '../../js/widget';
-import { dataUriToBlobSync, getFilename } from '../../js/utils';
+import {
+    dataUriToBlobSync,
+    getFilename,
+    encodeHtmlEntities,
+} from '../../js/utils';
 import downloadUtils from '../../js/download-utils';
 
 /**
@@ -253,11 +257,11 @@ class DrawWidget extends Widget {
         const load = this.props.load
             ? `<input type="file" class="ignore draw-widget__load"${
                   this.props.capture !== null
-                      ? ` capture="${this.props.capture}"`
+                      ? ` capture="${encodeHtmlEntities(this.props.capture)}"`
                       : ''
-              } accept="${
+              } accept="${encodeHtmlEntities(
                   this.props.accept
-              }"/><div class="widget file-picker"><input class="ignore fake-file-input"/><div class="file-feedback"></div></div>`
+              )}"/><div class="widget file-picker"><input class="ignore fake-file-input"/><div class="file-feedback"></div></div>`
             : '';
         const fullscreenBtns = this.props.touch
             ? '<button type="button" class="show-canvas-btn btn btn-default">Draw/Sign</button>' +
@@ -332,8 +336,8 @@ class DrawWidget extends Widget {
                 this.props.type === 'signature'
                     ? t('drawwidget.signature')
                     : this.props.type === 'drawing'
-                    ? t('drawwidget.drawing')
-                    : t('drawwidget.annotation');
+                      ? t('drawwidget.drawing')
+                      : t('drawwidget.annotation');
             dialog
                 .confirm(t('filepicker.resetWarning', { item }))
                 .then((confirmed) => {
@@ -588,8 +592,8 @@ class DrawWidget extends Widget {
         props.type = props.appearances.includes('draw')
             ? 'drawing'
             : props.appearances.includes('signature')
-            ? 'signature'
-            : 'annotation';
+              ? 'signature'
+              : 'annotation';
         props.filename = `${props.type}.png`;
         props.load = props.type === 'annotation';
         props.colors =
@@ -611,7 +615,15 @@ class DrawWidget extends Widget {
                       'darkgray',
                   ];
         props.touch = support.touch;
-        props.accept = this.element.getAttribute('accept');
+        const accept = this.element.getAttribute('accept');
+        // Ensure HEIC/HEIF files appear under "Image Files" in the OS file picker,
+        // since `image/*` alone excludes them on most non-Apple browsers/OS.
+        // File extensions (.heic/.heif) are needed alongside MIME types because
+        // image/heic is not registered in most Linux MIME databases.
+        props.accept =
+            accept === 'image/*'
+                ? 'image/*,image/heic,image/heif,.heic,.heif'
+                : accept;
         props.capture = this.element.getAttribute('capture');
 
         return props;

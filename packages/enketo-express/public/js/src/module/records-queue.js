@@ -23,6 +23,15 @@ let finalRecordPresent;
 let uploadOngoing = false;
 
 /**
+ * The instanceId of the record whose upload failed most recently. The next
+ * upload attempt starts with the record after it, so that a single broken
+ * record cannot block the rest of the queue.
+ *
+ * @type {string | null}
+ */
+let lastFailedInstanceId = null;
+
+/**
  * @typedef {import('../../app/models/record-model').EnketoRecord} EnketoRecord
  */
 
@@ -35,6 +44,7 @@ function init() {
 
     finalRecordPresent = false;
     uploadOngoing = false;
+    lastFailedInstanceId = null;
 
     return _updateRecordList().then(uploadQueue);
 }
@@ -106,7 +116,9 @@ function save(action, record) {
             return result;
         })
         .then(({ enketoId }) => formCache.get({ enketoId }))
-        .then((survey) => setLastSavedRecord(survey, record))
+        .then((survey) =>
+            survey ? setLastSavedRecord(survey, record) : undefined
+        )
         .then(_updateRecordList)
         .then(() => result);
 }
@@ -194,6 +206,28 @@ function setActive(instanceId) {
 
 /** @type {'offline' | 'failure' | null} */
 let backoffReason = null;
+
+/**
+ * Reorders records so that the record following the last failed record comes
+ * first, wrapping around to the start of the list.
+ *
+ * @template {{ instanceId: string }} T
+ * @param {T[]} records
+ * @return {T[]}
+ */
+const rotateAfterLastFailure = (records) => {
+    const failedIndex = records.findIndex(
+        ({ instanceId }) => instanceId === lastFailedInstanceId
+    );
+
+    if (failedIndex === -1) {
+        return records;
+    }
+
+    const startIndex = (failedIndex + 1) % records.length;
+
+    return [...records.slice(startIndex), ...records.slice(0, startIndex)];
+};
 
 /**
  * @typedef UploadQueueOptions
@@ -293,10 +327,14 @@ const uploadQueue = async (
 
     // Get whole records, including files
     const records = await Promise.all(
-        displayableRecords.map(({ instanceId }) => store.record.get(instanceId))
+        rotateAfterLastFailure(displayableRecords).map(({ instanceId }) =>
+            store.record.get(instanceId)
+        )
     );
 
-    // Perform record uploads sequentially for nicer feedback and to avoid issues when connections are very poor
+    // Perform record uploads sequentially for nicer feedback and to avoid issues when connections are very poor.
+    // Stop at the first failure, so that the remaining records are only retried after the backoff delay
+    // instead of each of them hitting a server which may already be struggling.
     // eslint-disable-next-line no-restricted-syntax
     for await (const record of records) {
         try {
@@ -328,6 +366,9 @@ const uploadQueue = async (
             // if any non HTTP error occurs, output the error.message
             errorMsg = gui.getErrorResponseMsg(result);
             uploadProgress.update(record.instanceId, 'error', errorMsg);
+
+            lastFailedInstanceId = record.instanceId;
+            break;
         }
     }
 
@@ -339,6 +380,7 @@ const uploadQueue = async (
     if (success) {
         // Cancel current backoff if upload is successful
         cancelBackoff();
+        lastFailedInstanceId = null;
 
         gui.feedback(
             t('alert.queuesubmissionsuccess.msg', {

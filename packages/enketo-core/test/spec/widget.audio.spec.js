@@ -1,0 +1,654 @@
+import AudioWidget from '../../src/widget/audio/audio';
+import AudioRecorder from '../../src/js/audio-recorder/audio-recorder';
+import dialog from '../../src/js/fake-dialog';
+import {
+    testStaticProperties,
+    testRequiredMethods,
+    testBasicInstantiation,
+} from '../helpers/test-widget';
+import { waitFor } from '../helpers/wait-for';
+import { getCachedFile } from '../../src/js/utils';
+
+const FORM = `<form class="or">
+        <label class="question">
+            <input name="/data/audio" type="file" data-type-xml="binary" accept="audio/*" />
+        </label>
+        <input />
+    </form>`;
+
+testStaticProperties(AudioWidget);
+testRequiredMethods(AudioWidget);
+testBasicInstantiation(AudioWidget, FORM);
+
+describe('AudioWidget', () => {
+    /** @type {import('sinon').SinonSandbox} */
+    let sandbox;
+
+    beforeEach(() => {
+        sandbox = sinon.createSandbox();
+    });
+
+    afterEach(() => {
+        sandbox.restore();
+    });
+
+    function createWidget(formHtml = FORM) {
+        const fragment = document
+            .createRange()
+            .createContextualFragment(formHtml);
+        const control = fragment.querySelector(AudioWidget.selector);
+        const widget = new AudioWidget(control);
+        return { widget, control };
+    }
+
+    describe('selector', () => {
+        it('matches audio/* inputs that are not draw/signature/annotate', () => {
+            const { control } = createWidget();
+            expect(control).not.to.equal(null);
+        });
+
+        it('does not match audio/* inputs inside or-appearance-draw', () => {
+            const form = FORM.replace(
+                'class="question"',
+                'class="question or-appearance-draw"'
+            );
+            const fragment = document
+                .createRange()
+                .createContextualFragment(form);
+            const control = fragment.querySelector(AudioWidget.selector);
+            expect(control).to.equal(null);
+        });
+
+        it('does not match audio/* inputs inside or-appearance-signature', () => {
+            const form = FORM.replace(
+                'class="question"',
+                'class="question or-appearance-signature"'
+            );
+            const fragment = document
+                .createRange()
+                .createContextualFragment(form);
+            const control = fragment.querySelector(AudioWidget.selector);
+            expect(control).to.equal(null);
+        });
+
+        it('does not match audio/* inputs inside or-appearance-annotate', () => {
+            const form = FORM.replace(
+                'class="question"',
+                'class="question or-appearance-annotate"'
+            );
+            const fragment = document
+                .createRange()
+                .createContextualFragment(form);
+            const control = fragment.querySelector(AudioWidget.selector);
+            expect(control).to.equal(null);
+        });
+    });
+
+    describe('initialisation', () => {
+        it('hides the original input element', () => {
+            const { control } = createWidget();
+            expect(control.classList.contains('hidden')).to.equal(true);
+        });
+
+        it('marks the element with data-audio attribute', () => {
+            const { control } = createWidget();
+            expect(control.dataset.audio).to.equal('true');
+        });
+
+        it('changes the input type to text', () => {
+            const { control } = createWidget();
+            expect(control.type).to.equal('text');
+        });
+
+        it('renders the action-select step by default', () => {
+            const { widget } = createWidget();
+            const actionSelect = widget.question.querySelector(
+                '.step-action-select'
+            );
+            expect(actionSelect).not.to.equal(null);
+        });
+
+        it('renders a record button', () => {
+            const { widget } = createWidget();
+            const btn = widget.question.querySelector('.btn-record');
+            expect(btn).not.to.equal(null);
+        });
+
+        it('renders an upload button', () => {
+            const { widget } = createWidget();
+            const btn = widget.question.querySelector('.btn-upload');
+            expect(btn).not.to.equal(null);
+        });
+
+        it('falls back to action-select step when existing file cannot be loaded', (done) => {
+            const form = FORM.replace(
+                'accept="audio/*"',
+                'accept="audio/*" data-loaded-file-name="existing.webm"'
+            );
+            const fragment = document
+                .createRange()
+                .createContextualFragment(form);
+            const control = fragment.querySelector(AudioWidget.selector);
+            const widget = new AudioWidget(control);
+
+            Promise.resolve()
+                .then(() => {
+                    const actionSelect = widget.question.querySelector(
+                        '.step-action-select'
+                    );
+                    expect(actionSelect).not.to.equal(null);
+                })
+                .then(done, done);
+        });
+    });
+
+    describe('postFixFilename()', () => {
+        it('each widget instance produces a validly postfixed name independently', () => {
+            const { widget: widget1 } = createWidget();
+            const { widget: widget2 } = createWidget();
+            const name1 = widget1.postFixFilename('same-name-test.webm');
+            const name2 = widget2.postFixFilename('same-name-test.webm');
+            expect(name1).to.match(/^same-name-test-\d{8}_\d{6}\.webm$/);
+            expect(name2).to.match(/^same-name-test-\d{8}_\d{6}\.webm$/);
+        });
+
+        it('adds a timestamp postfix before the file extension', () => {
+            const { widget } = createWidget();
+            const result = widget.postFixFilename('my-audio.mp3');
+            // Should match: my-audio-YYYYMMDD_HHMMSS.mp3
+            expect(result).to.match(/^my-audio-\d{8}_\d{6}\.mp3$/);
+        });
+
+        it('works for filenames with multiple dots', () => {
+            const { widget } = createWidget();
+            const result = widget.postFixFilename('my.audio.file.mp3');
+            expect(result).to.match(/^my\.audio\.file-\d{8}_\d{6}\.mp3$/);
+        });
+
+        it('always produces a validly postfixed name regardless of when called', () => {
+            const { widget } = createWidget();
+            const a = widget.postFixFilename('recording.webm');
+            const b = widget.postFixFilename('recording.webm');
+            expect(a).to.match(/^recording-\d{8}_\d{6}\.webm$/);
+            expect(b).to.match(/^recording-\d{8}_\d{6}\.webm$/);
+        });
+
+        it('produces a name that differs from the original', () => {
+            const { widget } = createWidget();
+            const original = 'same-name-test.webm';
+            const result = widget.postFixFilename(original);
+            expect(result).not.to.equal(original);
+        });
+
+        it('produces names that do not collide when called at different times', (done) => {
+            const { widget } = createWidget();
+
+            const first = widget.postFixFilename('same-name-test.webm');
+            // Wait at least one second to guarantee a different timestamp
+            setTimeout(() => {
+                const second = widget.postFixFilename('same-name-test.webm');
+                expect(first).not.to.equal(second);
+                done();
+            }, 1100);
+        });
+    });
+
+    describe('getFileName()', () => {
+        it('derives a name from the field path', () => {
+            const { widget } = createWidget();
+            const name = widget.getFileName();
+            // The control has name="/data/audio", so the base should be "audio"
+            expect(name).to.match(/^audio-\d{8}_\d{6}\.webm$/);
+        });
+
+        it('appends a .webm extension', () => {
+            const { widget } = createWidget();
+            expect(widget.getFileName()).to.match(/\.webm$/);
+        });
+    });
+
+    describe('uploading a file', () => {
+        it('applies a timestamp postfix to the uploaded filename', async () => {
+            const { widget, control } = createWidget();
+
+            const file = new File(['audio data'], 'same-name-test.webm', {
+                type: 'audio/webm',
+            });
+
+            control.type = 'file';
+            const postFixSpy = sandbox.spy(widget, 'postFixFilename');
+            sandbox.stub(widget, 'isValidAudioFile').resolves(true);
+
+            Object.defineProperty(control, 'files', {
+                get: () => ({ 0: file, length: 1 }),
+                configurable: true,
+            });
+
+            control.dispatchEvent(new Event('change', { bubbles: true }));
+
+            await waitFor(() => postFixSpy.calledOnce);
+
+            expect(postFixSpy.firstCall.args[0]).to.equal(
+                'same-name-test.webm'
+            );
+            expect(widget.fileName).to.match(
+                /^same-name-test-\d{8}_\d{6}\.webm$/
+            );
+        });
+
+        it('sets originalInputValue to the postfixed filename after upload', async () => {
+            const { widget, control } = createWidget();
+
+            const file = new File(['audio data'], 'test-upload.mp3', {
+                type: 'audio/mpeg',
+            });
+
+            control.type = 'file';
+            sandbox.stub(widget, 'isValidAudioFile').resolves(true);
+
+            Object.defineProperty(control, 'files', {
+                get: () => ({ 0: file, length: 1 }),
+                configurable: true,
+            });
+
+            control.dispatchEvent(new Event('change', { bubbles: true }));
+
+            await waitFor(() =>
+                /^test-upload-\d{8}_\d{6}\.mp3$/.test(widget.originalInputValue)
+            );
+        });
+
+        it('resets element type to text after upload', async () => {
+            const { widget, control } = createWidget();
+
+            const file = new File(['audio data'], 'test.webm', {
+                type: 'audio/webm',
+            });
+
+            control.type = 'file';
+            sandbox.stub(widget, 'isValidAudioFile').resolves(true);
+
+            Object.defineProperty(control, 'files', {
+                get: () => ({ 0: file, length: 1 }),
+                configurable: true,
+            });
+
+            control.dispatchEvent(new Event('change', { bubbles: true }));
+
+            await waitFor(() => control.type === 'text');
+        });
+
+        it('shows an error and stays on action-select step when file is not valid audio', async () => {
+            const { widget, control } = createWidget();
+
+            const file = new File(['this is not audio content'], 'test.mp3', {
+                type: 'audio/mpeg',
+            });
+
+            control.type = 'file';
+            sandbox.stub(widget, 'isValidAudioFile').resolves(false);
+            const alertStub = sandbox.stub(dialog, 'alert').resolves();
+
+            Object.defineProperty(control, 'files', {
+                get: () => ({ 0: file, length: 1 }),
+                configurable: true,
+            });
+
+            control.dispatchEvent(new Event('change', { bubbles: true }));
+
+            await waitFor(() => alertStub.calledOnce);
+
+            const actionSelect = widget.question.querySelector(
+                '.step-action-select'
+            );
+            expect(actionSelect).not.to.equal(null);
+        });
+
+        it('does not proceed to playback step when file is not valid audio', (done) => {
+            const { widget, control } = createWidget();
+
+            const file = new File(['this is not audio content'], 'fake.mp3', {
+                type: 'audio/mpeg',
+            });
+
+            control.type = 'file';
+            sandbox.stub(widget, 'isValidAudioFile').resolves(false);
+            const showPlaybackSpy = sandbox.spy(widget, 'showPlaybackStep');
+
+            Object.defineProperty(control, 'files', {
+                get: () => ({ 0: file, length: 1 }),
+                configurable: true,
+            });
+
+            control.dispatchEvent(new Event('change', { bubbles: true }));
+
+            // No positive signal to wait for here (we're asserting something
+            // does NOT happen), so give the async handler a fixed window to
+            // (not) call showPlaybackStep, then assert.
+            setTimeout(() => {
+                expect(showPlaybackSpy.called).to.equal(false);
+                done();
+            }, 100);
+        });
+    });
+
+    describe('value getter / setter', () => {
+        it('returns null when no audio has been set', () => {
+            const { widget } = createWidget();
+            expect(widget.value).to.equal(null);
+        });
+
+        it('stores the audio file as a Blob, not as a data URL', () => {
+            const { widget, control } = createWidget();
+            const blob = new Blob(['audio'], { type: 'audio/webm' });
+            widget.value = blob;
+            expect(widget.value).to.equal(blob);
+            expect(getCachedFile(control)).to.equal(blob);
+            expect(control.dataset.cache).to.equal(undefined);
+        });
+
+        it('clears the audio file when set to null', () => {
+            const { widget, control } = createWidget();
+            widget.value = new Blob(['audio'], { type: 'audio/webm' });
+            widget.value = null;
+            expect(getCachedFile(control)).to.equal(undefined);
+        });
+    });
+
+    describe('validate()', () => {
+        it('sets a validation error when recording is in progress', () => {
+            const { widget } = createWidget();
+
+            sandbox.stub(widget.audioRecorder, 'isRecording').returns(true);
+            sandbox.stub(widget.audioRecorder, 'isPaused').returns(false);
+
+            // Stub to avoid hitting the DOM (no .custom-error-msg in test form)
+            const setValidationStub = sandbox.stub(
+                widget,
+                'setValidationError'
+            );
+            widget.validate();
+
+            expect(setValidationStub.calledOnce).to.equal(true);
+        });
+
+        it('sets a validation error when recording is paused', () => {
+            const { widget } = createWidget();
+
+            sandbox.stub(widget.audioRecorder, 'isRecording').returns(false);
+            sandbox.stub(widget.audioRecorder, 'isPaused').returns(true);
+
+            const setValidationStub = sandbox.stub(
+                widget,
+                'setValidationError'
+            );
+            widget.validate();
+
+            expect(setValidationStub.calledOnce).to.equal(true);
+        });
+
+        it('does not set a validation error when idle', () => {
+            const { widget } = createWidget();
+
+            sandbox.stub(widget.audioRecorder, 'isRecording').returns(false);
+            sandbox.stub(widget.audioRecorder, 'isPaused').returns(false);
+
+            const setValidationStub = sandbox.stub(
+                widget,
+                'setValidationError'
+            );
+            widget.validate();
+
+            expect(setValidationStub.called).to.equal(false);
+        });
+    });
+
+    describe('beforeSubmit()', () => {
+        it('rejects when a recording is in progress', (done) => {
+            const { widget } = createWidget();
+
+            sandbox.stub(widget.audioRecorder, 'isRecording').returns(true);
+            sandbox.stub(widget.audioRecorder, 'isPaused').returns(false);
+
+            widget
+                .beforeSubmit()
+                .then(() => done(new Error('Expected rejection')))
+                .catch((err) => {
+                    expect(err).to.be.instanceof(Error);
+                    done();
+                });
+        });
+
+        it('rejects when a recording is paused', (done) => {
+            const { widget } = createWidget();
+
+            sandbox.stub(widget.audioRecorder, 'isRecording').returns(false);
+            sandbox.stub(widget.audioRecorder, 'isPaused').returns(true);
+
+            widget
+                .beforeSubmit()
+                .then(() => done(new Error('Expected rejection')))
+                .catch((err) => {
+                    expect(err).to.be.instanceof(Error);
+                    done();
+                });
+        });
+
+        it('resolves when idle', (done) => {
+            const { widget } = createWidget();
+
+            sandbox.stub(widget.audioRecorder, 'isRecording').returns(false);
+            sandbox.stub(widget.audioRecorder, 'isPaused').returns(false);
+
+            widget.beforeSubmit().then(done, done);
+        });
+    });
+
+    describe('upload button', () => {
+        it('changes input type to file when clicked', () => {
+            const { widget, control } = createWidget();
+            const uploadBtn = widget.question.querySelector('.btn-upload');
+            uploadBtn.click();
+            expect(control.type).to.equal('file');
+        });
+    });
+
+    describe('showActionSelectStep()', () => {
+        it('clears the current value', async () => {
+            const { widget } = createWidget();
+
+            widget.value = new Blob(['audio'], { type: 'audio/webm' });
+            widget.showActionSelectStep();
+
+            await waitFor(() => widget.value === null);
+        });
+
+        it('resets the input type to text', () => {
+            const { widget, control } = createWidget();
+            // Force type to file first
+            control.type = 'file';
+            widget.showActionSelectStep();
+            expect(control.type).to.equal('text');
+        });
+    });
+
+    describe('playback player', () => {
+        const showPlayback = (widget) => {
+            widget.audioBlob = new Blob(['audio'], { type: 'audio/webm' });
+            widget.showPlaybackStep();
+
+            return widget.audioPlayer;
+        };
+
+        it('is stopped and released on cleanup', () => {
+            const { widget } = createWidget();
+            const player = showPlayback(widget);
+            const pause = sandbox.spy(player, 'pause');
+            const load = sandbox.spy(player, 'load');
+
+            expect(player.hasAttribute('src')).to.equal(true);
+
+            widget.cleanup();
+
+            expect(pause.calledOnce).to.equal(true);
+            expect(player.hasAttribute('src')).to.equal(false);
+            expect(load.calledOnce).to.equal(true);
+            expect(widget.audioPlayer).to.equal(null);
+        });
+
+        it('releases the previous player when the playback step is shown again', () => {
+            const { widget } = createWidget();
+            const previousPlayer = showPlayback(widget);
+            const pause = sandbox.spy(previousPlayer, 'pause');
+
+            const player = showPlayback(widget);
+
+            expect(player).not.to.equal(previousPlayer);
+            expect(pause.calledOnce).to.equal(true);
+            expect(previousPlayer.hasAttribute('src')).to.equal(false);
+            expect(player.hasAttribute('src')).to.equal(true);
+        });
+    });
+
+    describe('recording', () => {
+        let state;
+        let audioContext;
+        let form;
+
+        beforeEach(() => {
+            state = 'inactive';
+
+            sandbox
+                .stub(AudioRecorder.prototype, 'requestPermissions')
+                .resolves();
+            sandbox
+                .stub(AudioRecorder.prototype, 'startRecording')
+                .callsFake(async () => {
+                    state = 'recording';
+                });
+            sandbox
+                .stub(AudioRecorder.prototype, 'stopRecording')
+                .callsFake(async () => {
+                    state = 'inactive';
+                });
+            sandbox
+                .stub(AudioRecorder.prototype, 'getRecordedFile')
+                .resolves(new Blob(['audio'], { type: 'audio/webm' }));
+            sandbox
+                .stub(AudioRecorder.prototype, 'isRecording')
+                .callsFake(() => state === 'recording');
+            sandbox
+                .stub(AudioRecorder.prototype, 'isPaused')
+                .callsFake(() => state === 'paused');
+
+            audioContext = {
+                createMediaStreamSource: () => ({ connect() {} }),
+                createAnalyser: () => ({
+                    frequencyBinCount: 16,
+                    getByteFrequencyData() {},
+                }),
+                close: sandbox.stub().resolves(),
+            };
+            sandbox.stub(window, 'AudioContext').returns(audioContext);
+
+            form = document
+                .createRange()
+                .createContextualFragment(FORM)
+                .querySelector('form');
+            document.body.append(form);
+        });
+
+        afterEach(() => {
+            form.remove();
+        });
+
+        const startRecording = async () => {
+            const control = form.querySelector(AudioWidget.selector);
+            const widget = new AudioWidget(control);
+            widget.question.querySelector('.btn-record').click();
+            await waitFor(() => state === 'recording' && widget.audioContext);
+
+            return widget;
+        };
+
+        it('closes the audio context when the recording is stopped', async () => {
+            const widget = await startRecording();
+
+            widget.question.querySelector('.btn-stop').click();
+            await waitFor(() => audioContext.close.called);
+
+            expect(audioContext.close.calledOnce).to.equal(true);
+            expect(widget.audioContext).to.equal(null);
+            expect(widget.animationFrameId).to.equal(null);
+        });
+
+        it('keeps the recorded file as a Blob for the file manager', async () => {
+            const widget = await startRecording();
+            const control = form.querySelector(AudioWidget.selector);
+            // The test form has no .custom-error-msg element
+            sandbox.stub(widget, 'setValidationError');
+
+            widget.question.querySelector('.btn-stop').click();
+            await waitFor(() => getCachedFile(control));
+
+            expect(getCachedFile(control)).to.be.instanceof(Blob);
+            expect(control.dataset.cache).to.equal(undefined);
+            expect(control.value).to.equal(widget.fileName);
+
+            widget.cleanup();
+            expect(widget.playbackUrl).to.equal(null);
+            expect(getCachedFile(control)).to.equal(undefined);
+            expect(widget.audioBlob).to.equal(null);
+        });
+
+        it('revokes the blob URL of a previously saved file on cleanup', () => {
+            const control = form.querySelector(AudioWidget.selector);
+            const widget = new AudioWidget(control);
+            const revoke = sandbox.spy(URL, 'revokeObjectURL');
+            const url = URL.createObjectURL(new Blob(['audio']));
+            widget.existingFileUrl = url;
+
+            widget.cleanup();
+
+            expect(revoke.calledWith(url)).to.equal(true);
+            expect(widget.existingFileUrl).to.equal(null);
+        });
+
+        it('stops a paused recording and releases resources on cleanup', async () => {
+            const widget = await startRecording();
+            const dispose = sandbox.spy(widget.audioRecorder, 'dispose');
+            state = 'paused';
+
+            widget.cleanup();
+
+            expect(dispose.calledOnce).to.equal(true);
+            expect(audioContext.close.calledOnce).to.equal(true);
+            expect(widget.animationFrameId).to.equal(null);
+            await waitFor(() => state === 'inactive');
+        });
+
+        it('does not start recording if cleaned up while waiting for permission', async () => {
+            let grantPermission;
+            AudioRecorder.prototype.requestPermissions.callsFake(
+                () =>
+                    new Promise((resolve) => {
+                        grantPermission = resolve;
+                    })
+            );
+            const control = form.querySelector(AudioWidget.selector);
+            const widget = new AudioWidget(control);
+            const dispose = sandbox.spy(widget.audioRecorder, 'dispose');
+
+            widget.question.querySelector('.btn-record').click();
+            await waitFor(() => grantPermission);
+            widget.cleanup();
+            grantPermission();
+            await waitFor(() => dispose.calledTwice);
+
+            expect(AudioRecorder.prototype.startRecording.called).to.equal(
+                false
+            );
+            expect(window.AudioContext.called).to.equal(false);
+        });
+    });
+});

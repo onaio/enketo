@@ -21,7 +21,6 @@ import encryptor from './encryptor';
 import formCache from './form-cache';
 import { getLastSavedRecord, populateLastSavedInstances } from './last-saved';
 import { replaceMediaSources, replaceModelMediaSources } from './media';
-import markdownit from 'markdown-it';
 
 /**
  * @typedef {import('../../../../app/models/survey-model').SurveyObject} Survey
@@ -45,6 +44,7 @@ const formOptions = {
  * @typedef ControllerWebformInitData
  * @property {string} modelStr
  * @property {string} instanceStr
+ * @property {object} [validatedDefaults] - pre-validated URL default values from getValidatedDefaults
  * @property {Document[]} external
  * @property {Survey} survey
  * @property {InstanceAttachment[]} [instanceAttachments]
@@ -102,6 +102,13 @@ function init(formEl, data, loadErrors = []) {
 
             form = new Form(formEl, data, formOptions);
             replaceModelMediaSources(form, media);
+
+            if (form.encryptionKey && data.instanceAttachments) {
+                // Fetch the attachments now: their URLs resolve through the
+                // record cached in Redis, which starts expiring when the edit
+                // link is issued, before this page is even loaded.
+                fileManager.prefetchInstanceAttachments();
+            }
 
             loadErrors = loadErrors.concat(form.init());
 
@@ -224,13 +231,18 @@ function _checkAutoSavedRecord() {
  * @param {ResetFormOptions} [options]
  * @return {Promise<void>}
  */
+let _isResetting = false;
+
 function _resetForm(survey, options = {}) {
+    _isResetting = true;
+
     return getLastSavedRecord(survey.enketoId)
         .then((lastSavedRecord) =>
             populateLastSavedInstances(survey, lastSavedRecord)
         )
         .then((survey) => {
             const formEl = form.resetView();
+            formCache.revokeMediaObjectUrls();
 
             form = new Form(
                 formEl,
@@ -245,6 +257,14 @@ function _resetForm(survey, options = {}) {
 
             const loadErrors = form.init();
 
+            const { validatedDefaults } = formData;
+            if (validatedDefaults && Object.keys(validatedDefaults).length) {
+                for (const [path, value] of Object.entries(validatedDefaults)) {
+                    form.model.node(path).setVal(value);
+                }
+                form.setAllVals();
+            }
+
             form.view.html.dispatchEvent(events.FormReset());
 
             if (options.isOffline) {
@@ -258,6 +278,9 @@ function _resetForm(survey, options = {}) {
             if (loadErrors.length > 0) {
                 gui.alertLoadErrors(loadErrors);
             }
+        })
+        .finally(() => {
+            _isResetting = false;
         });
 }
 
@@ -298,6 +321,7 @@ function _loadRecord(survey, instanceId, confirmed) {
                 records.setActive(record.instanceId);
 
                 const formEl = form.resetView();
+                formCache.revokeMediaObjectUrls();
                 form = new Form(
                     formEl,
                     {
@@ -373,7 +397,7 @@ function _submitRecord(survey) {
 
     return form
         .beforeSubmit()
-        .then(() => fileManager.getCurrentFiles())
+        .then(() => fileManager.getCurrentFiles(include))
         .then((files) => {
             const record = {
                 enketoId: settings.enketoId,
@@ -413,7 +437,7 @@ function _submitRecord(survey) {
             // this event is used in communicating back to iframe parent window
             document.dispatchEvent(events.SubmissionSuccess());
 
-            // Only check for result message if there was a submitMessageXPath defined
+            // Only consider result message if there was a submitMessageXPath defined
             const submitMessage = submitMessageXPath ? result.message : null;
 
             if (
@@ -421,13 +445,7 @@ function _submitRecord(survey) {
                 submitMessage &&
                 submitMessage.length > 0
             ) {
-                const md = markdownit();
-                gui.fullScreenAlert(
-                    md.render(submitMessage),
-                    t('alert.submissionsuccess.heading'),
-                    'normal'
-                );
-                _resetForm(survey);
+                gui.displayMessageInForm(submitMessage);
 
                 return;
             }
@@ -577,7 +595,7 @@ function _saveRecord(survey, draft, recordName, confirmed) {
 
     return autoSavePromise
         .then(() => form.beforeSubmit())
-        .then(() => fileManager.getCurrentFiles())
+        .then(() => fileManager.getCurrentFiles(include))
         .then((files) => {
             // build the record object
             const record = {
@@ -620,9 +638,9 @@ function _saveRecord(survey, draft, recordName, confirmed) {
 
             return records.save(saveMethod, record);
         })
-        .then(() => {
-            records.removeAutoSavedRecord();
-            _resetForm(survey, { isOffline: true });
+        .then(async () => {
+            await records.removeAutoSavedRecord();
+            await _resetForm(survey, { isOffline: true });
 
             if (draft) {
                 gui.alert(
@@ -665,10 +683,20 @@ function _saveRecord(survey, draft, recordName, confirmed) {
  */
 let autoSavePromise = Promise.resolve();
 
+/**
+ * Whether autosave is disabled for the current record: records loaded from
+ * storage and encrypted forms are never auto-saved.
+ *
+ * @return {boolean}
+ */
+function _isAutoSaveDisabled() {
+    return Boolean(form?.recordName || form?.encryptionKey);
+}
+
 function _autoSaveRecord() {
-    // Do not auto-save a record if the record was loaded from storage
-    // or if the form has enabled encryption
-    if (form.recordName || form.encryptionKey) {
+    // Do not auto-save a record if autosave is disabled for it, or if the
+    // form is currently being reset (e.g. after a submission).
+    if (_isAutoSaveDisabled() || _isResetting) {
         return autoSavePromise;
     }
 
@@ -967,9 +995,30 @@ function postEventAsMessageToParentWindow(event) {
     }
 }
 
+/**
+ * Whether reloading now would lose responses. Autosave covers most edits,
+ * but it is skipped for records loaded from storage and for encrypted forms.
+ *
+ * @return {boolean}
+ */
+function hasUnrecoverableEdits() {
+    return Boolean(form?.editStatus && _isAutoSaveDisabled());
+}
+
+/**
+ * Resolves once any in-flight autosave has finished.
+ *
+ * @return {Promise<void>}
+ */
+function whenAutoSaved() {
+    return autoSavePromise;
+}
+
 export default {
     init,
     setLogoutLinkVisibility,
     inIframe,
     postEventAsMessageToParentWindow,
+    hasUnrecoverableEdits,
+    whenAutoSaved,
 };
