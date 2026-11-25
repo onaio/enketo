@@ -377,7 +377,7 @@ function _submitRecord(survey) {
 
     return form
         .beforeSubmit()
-        .then(() => fileManager.getCurrentFiles())
+        .then(() => fileManager.getCurrentFiles(include))
         .then((files) => {
             const record = {
                 enketoId: settings.enketoId,
@@ -560,7 +560,7 @@ function _saveRecord(survey, draft, recordName, confirmed) {
 
     return autoSavePromise
         .then(() => form.beforeSubmit())
-        .then(() => fileManager.getCurrentFiles())
+        .then(() => fileManager.getCurrentFiles(include))
         .then((files) => {
             // build the record object
             const record = {
